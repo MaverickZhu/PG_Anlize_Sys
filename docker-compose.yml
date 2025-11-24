@@ -1,0 +1,70 @@
+version: '3.8'
+
+# docker-compose.yml
+#
+# 该文件定义了项目所需的后端服务（例如数据库）。
+# 使用 Docker Compose 可以一键启动、停止和管理这些服务，
+# 从而简化开发环境的搭建过程。
+#
+# 常用命令:
+#   - 启动服务 (后台运行): docker-compose up -d
+#   - 停止服务: docker-compose down
+#   - 查看服务状态: docker-compose ps
+#   - 查看服务日志: docker-compose logs -f db
+
+services:
+  db:
+    # 使用官方的 TimescaleDB 镜像，它包含了 PostgreSQL 和 TimescaleDB 扩展。
+    # pg16 指的是 PostgreSQL 版本16。
+    image: timescale/timescaledb:latest-pg16
+    container_name: pg_anlize_sys_db
+
+    # 设置环境变量，用于初始化数据库。
+    # 这些值必须与 src/config.py 中的默认设置保持一致，以确保应用可以连接。
+    environment:
+      - POSTGRES_DB=pg_anlize_sys
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    
+    ports:
+      # 将主机的 5432 端口映射到容器的 5432 端口。
+      # 这使得在主机上运行的应用程序可以通过 localhost:5432 连接到容器中的数据库。
+      - "5432:5432"
+
+    volumes:
+      # 创建一个命名的卷，用于持久化存储 PostgreSQL 的数据。
+      # 即使容器被删除，数据也会被保留在这个卷中。
+      - postgres_data:/var/lib/postgresql/data
+
+    # 健康检查，确保数据库服务完全启动并准备好接受连接后，才认为容器是健康的。
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pg_anlize_sys"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    restart: unless-stopped
+
+  redis:
+    # 新增: Redis 服务，作为实时数据的高速缓存和消息队列
+    image: redis:alpine
+    container_name: pg_anlize_sys_redis
+    ports:
+      - "16379:6379"
+    volumes:
+      - redis_data:/data
+    # 简单的健康检查
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+# 定义命名的卷
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local

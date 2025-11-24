@@ -1,0 +1,23 @@
+# Core
+python-dotenv
+psycopg2-binary
+SQLAlchemy
+redis
+
+# Data
+akshare
+tushare
+pandas
+numpy
+
+# Strategy & Backtesting
+pandas-ta
+backtrader
+
+# Scheduling
+APScheduler
+
+# Presentation
+streamlit
+flask
+plotly
