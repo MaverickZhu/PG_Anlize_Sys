@@ -6,14 +6,35 @@ import time
 import numpy as np
 from datetime import datetime
 from src.config import config
-from src.presentation import stock_detail
+from src.presentation import stock_detail, signal_history
+from src.data_storage.watchlist_manager import watchlist_manager
 
-# --- 页面配置 ---
+# --- 页面配置 (必须是第一个 st 命令) ---
 st.set_page_config(
     page_title="PG_Anlize_Sys | 智能量化看板",
     page_icon="⚡",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="auto" # 移动端自动折叠
 )
+
+# --- CSS 样式优化 (针对移动端) ---
+st.markdown("""
+    <style>
+    /* 缩小移动端顶部的空白 */
+    .block-container {
+        padding-top: 1rem;
+        padding-bottom: 1rem;
+    }
+    /* 优化 Metrics 在小屏幕的显示 */
+    [data-testid="stMetricValue"] {
+        font-size: 1.5rem !important;
+    }
+    /* 调整表格字体 */
+    div[data-testid="stDataFrame"] {
+        font-size: 0.8rem;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # --- Redis 连接 ---
 @st.cache_resource
@@ -160,14 +181,71 @@ def render_dashboard():
 
 def main():
     st.sidebar.title("🧭 导航")
-    page = st.sidebar.radio("Go to", ["全市场监控", "个股详情"])
+    
+    # 获取当前 URL 参数
+    query_params = st.query_params
+    default_page = "全市场监控"
+    if query_params.get("page") == "detail":
+        default_page = "个股详情"
+        
+    # 导航单选框
+    page_options = ["全市场监控", "个股详情", "历史信号"]
+    # 找到默认页面的索引
+    try:
+        index = page_options.index(default_page)
+    except:
+        index = 0
+        
+    page = st.sidebar.radio("Go to", page_options, index=index)
 
+    # --- 自选股列表 (在侧边栏) ---
+    st.sidebar.divider()
+    st.sidebar.subheader("⭐ 我的自选")
+    watchlist = watchlist_manager.get_watchlist()
+    
+    if watchlist:
+        for stock in watchlist:
+            # 获取股票名称 (需要从Redis查一下，简单起见先只显示代码，或尝试获取详情)
+            # 为了性能，这里直接显示代码，点击后跳转
+            col1, col2 = st.sidebar.columns([0.7, 0.3])
+            with col1:
+                if st.button(f"{stock}", key=f"wl_{stock}"):
+                    # 点击跳转到详情页
+                    st.query_params["page"] = "detail"
+                    st.query_params["code"] = stock
+                    st.rerun()
+            with col2:
+                # 简易删除按钮
+                if st.button("✖", key=f"rm_{stock}"):
+                    watchlist_manager.remove_stock(stock)
+                    st.rerun()
+    else:
+        st.sidebar.info("暂无自选股")
+
+    # --- 页面渲染 ---
     if page == "全市场监控":
+        # 清除详情页的参数，保持 URL 干净
+        if query_params.get("page") == "detail":
+            st.query_params.clear()
         render_dashboard()
+        
     elif page == "个股详情":
-        code_input = st.sidebar.text_input("输入股票代码 (e.g. sh600519)", value="sh600519")
-        st.query_params["code"] = code_input
+        # 获取代码
+        current_code = query_params.get("code", "sh600519")
+        code_input = st.sidebar.text_input("输入股票代码 (e.g. sh600519)", value=current_code)
+        
+        # 如果输入框变了，更新 URL
+        if code_input != current_code:
+            st.query_params["code"] = code_input
+            st.rerun()
+            
         stock_detail.render_stock_detail_page()
+        
+    elif page == "历史信号":
+        # 清除参数
+        if query_params.get("page"):
+            st.query_params.clear()
+        signal_history.render_signal_history_page()
 
 if __name__ == '__main__':
     main()

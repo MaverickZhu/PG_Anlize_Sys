@@ -20,7 +20,7 @@ class Config:
     DB_USER = os.environ.get('DB_USER', 'postgres')
     DB_PASSWORD = os.environ.get('DB_PASSWORD', 'password')
     DB_HOST = os.environ.get('DB_HOST', 'localhost')
-    DB_PORT = os.environ.get('DB_PORT', '5432')
+    DB_PORT = os.environ.get('DB_PORT', '15432')
     DB_NAME = os.environ.get('DB_NAME', 'pg_anlize_sys')
 
     # 构造数据库连接URI
@@ -32,7 +32,7 @@ class Config:
 
     # --- Redis 配置 ---
     REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
-    REDIS_PORT = int(os.environ.get('REDIS_PORT', 16379))
+    REDIS_PORT = int(os.environ.get('REDIS_PORT', 16380))
     REDIS_DB = int(os.environ.get('REDIS_DB', 0))
 
     # --- 数据源 API 配置 ---
@@ -42,6 +42,17 @@ class Config:
     # --- 日志配置 ---
     LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
     LOG_FILE_PATH = os.environ.get('LOG_FILE_PATH', 'logs/app.log')
+
+    # --- 通知配置 (Email) ---
+    # 默认使用 126/163/QQ 邮箱的 SMTP 服务
+    # 示例: smtp.126.com, 465 (SSL) 或 25
+    MAIL_SERVER = os.environ.get('MAIL_SERVER', 'smtp.example.com')
+    MAIL_PORT = int(os.environ.get('MAIL_PORT', 465))
+    MAIL_USE_SSL = os.environ.get('MAIL_USE_SSL', 'True').lower() in ('true', '1', 't')
+    MAIL_USERNAME = os.environ.get('MAIL_USERNAME', '')
+    MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD', '') # 授权码
+    MAIL_SENDER = os.environ.get('MAIL_SENDER', MAIL_USERNAME)
+    MAIL_RECEIVER = os.environ.get('MAIL_RECEIVER', '') # 接收通知的邮箱
 
 
 # 实例化配置对象，以便在项目的其他地方直接导入使用

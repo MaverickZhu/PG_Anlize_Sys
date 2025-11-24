@@ -35,6 +35,35 @@ def get_or_create_stock(db: Session, stock_code: str, stock_name: str, market: s
         logger.info(f"成功创建新股票记录: {stock_code} - {stock_name}")
         return new_stock
 
+def bulk_save_stocks(db: Session, stocks_data: List[dict]):
+    """
+    批量保存股票列表信息 (Upsert)。
+    如果股票已存在，更新名称等信息。
+    """
+    if not stocks_data:
+        return
+
+    try:
+        stmt = pg_insert(models.Stock).values(stocks_data)
+        
+        update_dict = {
+            'name': stmt.excluded.name,
+            'market': stmt.excluded.market
+        }
+        
+        stmt = stmt.on_conflict_do_update(
+            index_elements=['code'],
+            set_=update_dict
+        )
+        
+        db.execute(stmt)
+        db.commit()
+        logger.info(f"成功批量更新 {len(stocks_data)} 只股票信息。")
+
+    except Exception as e:
+        logger.error(f"批量保存股票信息失败: {e}")
+        db.rollback()
+
 def bulk_save_daily_kline(db: Session, kline_data: List[dict]):
     """
     批量保存日线行情数据。
@@ -102,3 +131,38 @@ def bulk_upsert_daily_kline(db: Session, kline_data: List[dict]):
         logger.error(f"批量UpsertK线数据错误: {e}")
         db.rollback()
         raise
+
+def save_signals(db: Session, signals_data: List[dict]):
+    """
+    批量保存生成的交易信号。
+    这里不做去重，因为同一天同一股票可能有不同策略的信号。
+    
+    :param db: 数据库会话
+    :param signals_data: 字典列表
+    """
+    if not signals_data:
+        return
+
+    try:
+        db.bulk_insert_mappings(models.SignalRecord, signals_data)
+        db.commit()
+        logger.info(f"成功保存 {len(signals_data)} 条策略信号。")
+    except Exception as e:
+        logger.error(f"保存策略信号失败: {e}")
+        db.rollback()
+
+def get_signal_records(db: Session, limit: int = 100) -> List[models.SignalRecord]:
+    """
+    获取最近的历史信号记录。
+    
+    :param db: 数据库会话
+    :param limit: 返回记录的最大数量
+    :return: SignalRecord 对象列表
+    """
+    try:
+        # 按时间倒序排列
+        signals = db.query(models.SignalRecord).order_by(models.SignalRecord.time.desc()).limit(limit).all()
+        return signals
+    except Exception as e:
+        logger.error(f"查询信号记录失败: {e}")
+        return []

@@ -44,6 +44,25 @@ class StockDailyKline(Base):
     def __repr__(self):
         return f"<StockDailyKline(time='{self.time}', code='{self.code}', close='{self.close}')>"
 
+class SignalRecord(Base):
+    """
+    策略信号记录表，对应 `signal_records` 表。
+    存储每次策略运行产生的关键信号（买入/卖出）。
+    """
+    __tablename__ = 'signal_records'
+
+    id = Column(BIGINT, primary_key=True, autoincrement=True, comment="主键ID")
+    time = Column(TIMESTAMP(timezone=True), nullable=False, comment="信号产生时间")
+    code = Column(String(16), nullable=False, index=True, comment="股票代码")
+    strategy_name = Column(String(64), nullable=False, comment="策略名称")
+    signal_type = Column(String(16), nullable=False, comment="信号类型: BUY, SELL")
+    price = Column(Float, comment="信号触发时的价格")
+    description = Column(String(255), comment="信号详细描述")
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), comment="记录创建时间")
+
+    def __repr__(self):
+        return f"<SignalRecord(time='{self.time}', code='{self.code}', type='{self.signal_type}')>"
+
 # 注意：将这张普通表转换为 TimescaleDB 超表的操作，通常需要在表创建后，
 # 通过执行一条特殊的SQL命令来完成。我们可以在 `init_db` 中加入这个逻辑。
 # SQL: SELECT create_hypertable('stock_daily_kline', 'time'); 

@@ -6,6 +6,10 @@ import redis
 import json
 from src.config import config
 from src.data_acquisition import data_fetcher
+from src.data_storage.watchlist_manager import watchlist_manager
+from src.strategy_engine.composite_strategy import CompositeStrategy
+from src.strategy_engine.backtest_engine import run_backtest
+from datetime import datetime, timedelta
 
 # --- Redis 连接 ---
 def get_redis_client():
@@ -191,6 +195,286 @@ def render_minute_chart(stock_code):
         st.error(f"分时图绘制出错: {e}")
         st.exception(e) # 打印详细堆栈
 
+def render_capital_flow(stock_code):
+    """渲染资金流向分析 (基于东财实时接口)"""
+    try:
+        # 获取实时资金流数据
+        money_flow = data_fetcher.fetch_stock_money_flow_realtime(stock_code)
+        
+        if not money_flow:
+            st.warning("暂无实时资金流向数据")
+            return
+
+        # 数据单位转换 (元 -> 万/亿)
+        def format_money(val):
+            if abs(val) > 100000000:
+                return f"{val/100000000:.2f} 亿"
+            else:
+                return f"{val/10000:.2f} 万"
+
+        # --- 可视化 ---
+        st.subheader("💰 资金流向分析 (Capital Flow Analysis)")
+        
+        tab_today, tab_trend = st.tabs(["📅 当日资金流 (实时)", "📈 近30日主力趋势"])
+        
+        with tab_today:
+            # 1. 主力/散户净流入概览
+            col_main, col_retail = st.columns(2)
+            
+            main_net = money_flow.get('main_net_inflow', 0)
+            retail_net = money_flow.get('retail_net_inflow', 0)
+            
+            col_main.metric("主力净流入", format_money(main_net), 
+                           delta=format_money(main_net), delta_color="normal")
+            col_retail.metric("散户净流入", format_money(retail_net), 
+                             delta=format_money(retail_net), delta_color="inverse") # 散户流入通常被视为反向指标(inverse)
+            
+            st.divider()
+            
+            # 2. 详细资金净流入分布
+            # 由于接口只返回净流入，我们直接展示净流入的柱状图
+            
+            categories = ['超大单', '大单', '中单', '小单']
+            net_flows = [
+                money_flow.get('super_large_net', 0),
+                money_flow.get('large_net', 0),
+                money_flow.get('medium_net', 0),
+                money_flow.get('small_net', 0)
+            ]
+            
+            colors = ['red' if v > 0 else 'green' for v in net_flows]
+            
+            fig_net = go.Figure(go.Bar(
+                x=categories,
+                y=net_flows,
+                marker_color=colors,
+                text=[format_money(v) for v in net_flows],
+                textposition='auto'
+            ))
+            
+            fig_net.update_layout(
+                title="各单净流入详情 (正=流入，负=流出)",
+                height=400,
+                yaxis_title="净流入金额 (元)"
+            )
+            st.plotly_chart(fig_net, use_container_width=True)
+
+        with tab_trend:
+            render_history_money_flow(stock_code)
+
+    except Exception as e:
+        st.error(f"资金流向分析失败: {e}")
+
+def render_history_money_flow(stock_code):
+    """
+    渲染历史主力资金流向 (近似估算)
+    使用日线数据的 Price Change * Volume 近似计算。
+    更精确的算法通常需要 Level-2 数据，这里使用 CMF (Chaikin Money Flow) 思想的简化版。
+    """
+    try:
+        # 获取最近 60 天日线数据
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=90)).strftime("%Y%m%d")
+        df = data_fetcher.fetch_stock_daily_kline(stock_code, start_date=start_date, end_date=end_date)
+        
+        if df.empty:
+            st.warning("暂无历史数据计算资金趋势")
+            return
+            
+        # 计算每日近似净流入 (Money Flow Volume)
+        # 经典公式 MFV = Volume * ((Close - Low) - (High - Close)) / (High - Low)
+        # 如果 High == Low (一字板), MFV = 0 或 Volume * (1 if Close > PrevClose else -1)
+        
+        mfv_list = []
+        for i, row in df.iterrows():
+            h, l, c, v = row['high'], row['low'], row['close'], row['volume']
+            if h == l:
+                mfv = 0 # 无法判断
+            else:
+                multiplier = ((c - l) - (h - c)) / (h - l)
+                mfv = v * multiplier * c # 乘以价格变成金额近似
+            mfv_list.append(mfv)
+            
+        df['net_flow_amount'] = mfv_list
+        
+        # 绘制柱状图
+        fig = go.Figure()
+        
+        # 颜色：红进绿出
+        colors = ['red' if v >= 0 else 'green' for v in df['net_flow_amount']]
+        
+        fig.add_trace(go.Bar(
+            x=df['time'],
+            y=df['net_flow_amount'],
+            marker_color=colors,
+            name='主力净流入(估)'
+        ))
+        
+        # 添加 5日 累计净流入曲线
+        df['cum_5d'] = df['net_flow_amount'].rolling(5).sum()
+        fig.add_trace(go.Scatter(
+            x=df['time'],
+            y=df['cum_5d'],
+            mode='lines',
+            name='5日累计净流入',
+            line=dict(color='blue', width=2)
+        ))
+        
+        fig.update_layout(
+            title="近30日主力资金流向趋势 (近似)",
+            height=350,
+            yaxis_title="净流入金额 (估算)",
+            xaxis_rangeslider_visible=False
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+    except Exception as e:
+        st.error(f"历史资金趋势计算失败: {e}")
+
+def render_strategy_diagnosis(stock_code):
+    """渲染策略诊断面板"""
+    try:
+        # 1. 获取历史数据 (至少200天以计算指标)
+        # 在生产环境中，这里可以进一步优化缓存
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=300)).strftime("%Y%m%d")
+        
+        df = data_fetcher.fetch_stock_daily_kline(stock_code, start_date=start_date, end_date=end_date)
+        
+        if df.empty or len(df) < 30:
+            st.warning("历史数据不足，无法进行策略诊断")
+            return
+
+        # 2. 运行策略引擎
+        strategy = CompositeStrategy()
+        result_df = strategy.apply(df)
+        
+        # 取最新一天的结果
+        latest = result_df.iloc[-1]
+        
+        # 3. 布局展示
+        st.subheader("🤖 AI 策略诊断")
+        
+        # 第一行：综合评分仪表盘 + 核心建议
+        col_score, col_signal = st.columns([1, 2])
+        
+        with col_score:
+            fig = go.Figure(go.Indicator(
+                mode = "gauge+number",
+                value = latest['score'],
+                title = {'text': "综合评分"},
+                gauge = {
+                    'axis': {'range': [0, 100]},
+                    'bar': {'color': "darkblue"},
+                    'steps': [
+                        {'range': [0, 20], 'color': "#ffdddd"},  # 弱势区
+                        {'range': [20, 80], 'color': "white"},   # 震荡区
+                        {'range': [80, 100], 'color': "#ddffdd"} # 强势区
+                    ],
+                    'threshold': {
+                        'line': {'color': "red", 'width': 4},
+                        'thickness': 0.75,
+                        'value': latest['score']
+                    }
+                }
+            ))
+            fig.update_layout(height=250, margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+            
+        with col_signal:
+            st.markdown("### 核心信号")
+            
+            # 根据分数和信号生成解读
+            signal_color = "gray"
+            signal_text = "观望"
+            if latest['score'] >= 80:
+                signal_color = "green"
+                signal_text = "强力买入"
+            elif latest['score'] <= 20:
+                signal_color = "red"
+                signal_text = "强力卖出"
+            elif latest['score'] >= 60:
+                signal_color = "lightgreen"
+                signal_text = "偏多震荡"
+            elif latest['score'] <= 40:
+                signal_color = "pink"
+                signal_text = "偏空震荡"
+                
+            st.markdown(f"""
+            <div style='padding: 20px; background-color: #f0f2f6; border-radius: 10px; border-left: 5px solid {signal_color}'>
+                <h2 style='color: {signal_color}; margin: 0'>{signal_text}</h2>
+                <p style='margin-top: 10px; font-size: 16px'>
+                    {latest.get('signal_desc', 'Evaluating market trends...')}
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        st.divider()
+        
+        # 第二行：具体指标卡片
+        m1, m2, m3 = st.columns(3)
+        
+        # MACD 状态
+        macd_val = latest.get('MACD_12_26_9', 0)
+        macd_sig = latest.get('MACDs_12_26_9', 0)
+        macd_hist = latest.get('MACDh_12_26_9', 0)
+        macd_status = "金叉" if macd_hist > 0 else "死叉"
+        m1.metric("MACD 趋势", macd_status, f"{macd_hist:.3f}", delta_color="normal")
+        
+        # RSI 状态
+        rsi_val = latest.get('RSI_14', 50)
+        rsi_status = "中性"
+        if rsi_val > 70: rsi_status = "超买 (风险)"
+        elif rsi_val < 30: rsi_status = "超卖 (机会)"
+        m2.metric("RSI (14)", f"{rsi_val:.1f}", rsi_status, delta_color="off")
+        
+        # 布林带状态
+        close_price = latest['close']
+        bb_upper = latest.get('BBU_20_2.0', 0)
+        bb_lower = latest.get('BBL_20_2.0', 0)
+        bb_pos = "中轨附近"
+        if close_price >= bb_upper: bb_pos = "突破上轨"
+        elif close_price <= bb_lower: bb_pos = "触及下轨"
+        m3.metric("布林带位置", bb_pos, f"上轨: {bb_upper:.2f}")
+
+    except Exception as e:
+        st.error(f"策略诊断执行失败: {e}")
+
+def render_backtest_panel(stock_code):
+    """渲染历史回测面板"""
+    st.subheader("⌛ 历史回测验证")
+    
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col1:
+        start_date = st.date_input("开始日期", value=datetime.now() - timedelta(days=365))
+    with col2:
+        end_date = st.date_input("结束日期", value=datetime.now())
+    with col3:
+        st.write("") # 占位
+        if st.button("🚀 开始回测", type="primary"):
+            with st.spinner("正在运行回测引擎..."):
+                # 格式化日期
+                s_str = start_date.strftime("%Y%m%d")
+                e_str = end_date.strftime("%Y%m%d")
+                
+                stats = run_backtest(stock_code, s_str, e_str)
+                
+                if not stats:
+                    st.error("回测失败，未获取到数据。")
+                elif "error" in stats:
+                    st.error(f"回测出错: {stats['error']}")
+                else:
+                    st.success("回测完成！")
+                    
+                    # 展示结果
+                    r1, r2, r3 = st.columns(3)
+                    ret_color = "normal" if stats['return_pct'] > 0 else "inverse"
+                    r1.metric("策略收益率", f"{stats['return_pct']:.2f}%", delta_color=ret_color)
+                    r2.metric("夏普比率", f"{stats['sharpe']:.2f}" if stats['sharpe'] else "N/A")
+                    r3.metric("最大回撤", f"{stats['max_drawdown']:.2f}%", delta_color="inverse")
+                    
+                    st.info(f"初始资金: {stats['initial_cash']:.0f} | 最终资金: {stats['final_value']:.0f}")
+
 def render_stock_detail_page():
     """个股详情页主入口"""
     # 从 URL 参数获取股票代码
@@ -209,7 +493,22 @@ def render_stock_detail_page():
         return
 
     # --- 页面头部 ---
-    st.title(f"{realtime_data['name']} ({stock_code})")
+    # 布局：标题 + 收藏按钮
+    col_title, col_fav = st.columns([0.85, 0.15])
+    
+    with col_title:
+        st.title(f"{realtime_data['name']} ({stock_code})")
+        
+    with col_fav:
+        is_watched = watchlist_manager.is_in_watchlist(stock_code)
+        if is_watched:
+            if st.button("★ 已收藏", key="btn_unfav"):
+                watchlist_manager.remove_stock(stock_code)
+                st.rerun()
+        else:
+            if st.button("☆ 加入自选", key="btn_fav"):
+                watchlist_manager.add_stock(stock_code)
+                st.rerun()
     
     # 核心指标栏
     kp1, kp2, kp3, kp4 = st.columns(4)
@@ -229,13 +528,16 @@ def render_stock_detail_page():
         st.subheader("📊 价格走势")
         
         # 使用 Tabs 切换分时图和日K线
-        tab1, tab2 = st.tabs(["🕒 分时图", "📅 日K线"])
+        tab1, tab2, tab3 = st.tabs(["🕒 分时图", "📅 日K线", "⌛ 历史回测"])
         
         with tab1:
             render_minute_chart(stock_code)
             
         with tab2:
             render_kline_chart(stock_code)
+            
+        with tab3:
+            render_backtest_panel(stock_code)
         
     with col_book:
         st.subheader("📑 深度盘口")
@@ -243,9 +545,9 @@ def render_stock_detail_page():
 
     # --- 底部策略区 ---
     st.divider()
-    st.subheader("🤖 策略诊断")
-    st.info("此处将展示 AI 对该股票的深度策略分析报告 (RSI/MACD/资金流向)...")
-    # TODO: 调用 CompositeStrategy 计算该个股的详细得分并展示
+    render_strategy_diagnosis(stock_code)
+    st.divider()
+    render_capital_flow(stock_code)
 
 if __name__ == '__main__':
     st.set_page_config(layout="wide")

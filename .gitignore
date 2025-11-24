@@ -40,8 +40,8 @@ data/
 *.log
 *.sqlite
 terminals/
+docker_data/
 
 # OS
 Thumbs.db
 .DS_Store
-

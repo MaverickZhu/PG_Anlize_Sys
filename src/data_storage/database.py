@@ -90,6 +90,6 @@ if __name__ == '__main__':
     print("正在手动执行数据库初始化...")
     logger.info("正在手动执行数据库初始化...")
     # 在 __main__ 中导入，避免循环依赖问题
-    from src.data_storage.models import Stock, StockDailyKline
+    from src.data_storage.models import Stock, StockDailyKline, SignalRecord
     init_db()
     print("数据库初始化流程执行完毕。") 
