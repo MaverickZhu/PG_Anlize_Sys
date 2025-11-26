@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Dict
 import pandas as pd
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -63,6 +63,33 @@ def bulk_save_stocks(db: Session, stocks_data: List[dict]):
     except Exception as e:
         logger.error(f"批量保存股票信息失败: {e}")
         db.rollback()
+
+def get_all_stocks(db: Session) -> List[models.Stock]:
+    """
+    获取数据库中所有股票的基础信息。
+    """
+    try:
+        return db.query(models.Stock).all()
+    except Exception as e:
+        logger.error(f"获取所有股票失败: {e}")
+        return []
+
+def get_stock_names(db: Session, codes: List[str]) -> Dict[str, str]:
+    """
+    批量获取股票代码对应的名称。
+    :param db:
+    :param codes: 股票代码列表
+    :return: 字典 {code: name}
+    """
+    if not codes:
+        return {}
+    try:
+        results = db.query(models.Stock.code, models.Stock.name)\
+            .filter(models.Stock.code.in_(codes)).all()
+        return {row.code: row.name for row in results}
+    except Exception as e:
+        logger.error(f"获取股票名称失败: {e}")
+        return {}
 
 def bulk_save_daily_kline(db: Session, kline_data: List[dict]):
     """
@@ -165,4 +192,50 @@ def get_signal_records(db: Session, limit: int = 100) -> List[models.SignalRecor
         return signals
     except Exception as e:
         logger.error(f"查询信号记录失败: {e}")
+        return []
+
+def add_watchlist_item(db: Session, code: str, notes: str = None, initial_price: float = None):
+    """
+    添加自选股到数据库。
+    如果已存在则忽略。
+    """
+    try:
+        # 使用 upsert 或先查后插，这里简单用 upsert (do nothing on conflict)
+        stmt = pg_insert(models.UserWatchlist).values(
+            code=code,
+            notes=notes,
+            initial_price=initial_price
+        )
+        # 如果已存在，什么都不做 (或者可以更新 notes)
+        stmt = stmt.on_conflict_do_nothing(index_elements=['code'])
+        
+        db.execute(stmt)
+        db.commit()
+        return True
+    except Exception as e:
+        logger.error(f"添加自选股失败 {code}: {e}")
+        db.rollback()
+        return False
+
+def remove_watchlist_item(db: Session, code: str):
+    """
+    从数据库删除自选股。
+    """
+    try:
+        db.query(models.UserWatchlist).filter(models.UserWatchlist.code == code).delete()
+        db.commit()
+        return True
+    except Exception as e:
+        logger.error(f"删除自选股失败 {code}: {e}")
+        db.rollback()
+        return False
+
+def get_watchlist_items(db: Session) -> List[models.UserWatchlist]:
+    """
+    获取所有自选股记录。
+    """
+    try:
+        return db.query(models.UserWatchlist).all()
+    except Exception as e:
+        logger.error(f"获取自选股列表失败: {e}")
         return []

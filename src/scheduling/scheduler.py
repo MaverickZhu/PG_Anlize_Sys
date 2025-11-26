@@ -8,44 +8,14 @@ from datetime import datetime, timedelta
 
 def update_stock_list_job():
     """
-    每日任务：更新A股股票列表。
-    通常在开盘前运行 (e.g., 08:30)。
+    每日任务：更新A股股票列表到数据库。
+    调用 data_fetcher 中的封装函数。
+    通常在盘后或夜间运行 (e.g., 17:30)。
     """
-    logger.info("SCHEDULER: [Start] Updating stock list...")
+    logger.info("SCHEDULER: [Start] Updating stock list database...")
     try:
-        # 1. 获取最新列表
-        df = data_fetcher.fetch_all_stock_list()
-        if df.empty:
-            logger.warning("SCHEDULER: Fetched stock list is empty, skipping update.")
-            return
-
-        # 2. 转换格式
-        # 假设 df 有 columns ['code', 'name']
-        stocks_data = []
-        for _, row in df.iterrows():
-            code = row['code']
-            name = row['name']
-            
-            # 简单的市场判断
-            market = 'Unknown'
-            if code.startswith('6'): market = 'SSE' # 上海
-            elif code.startswith('0') or code.startswith('3'): market = 'SZSE' # 深圳
-            elif code.startswith('4') or code.startswith('8'): market = 'BSE' # 北京
-            
-            stocks_data.append({
-                'code': code,
-                'name': name,
-                'market': market,
-                'ipo_date': None # 暂时不获取IPO日期
-            })
-
-        # 3. 保存到数据库
-        db = next(database.get_db())
-        crud.bulk_save_stocks(db, stocks_data)
-        db.close()
-        
-        logger.info(f"SCHEDULER: [End] Successfully updated {len(stocks_data)} stocks.")
-        
+        data_fetcher.update_stock_list_to_db()
+        logger.info("SCHEDULER: [End] Stock list update task finished.")
     except Exception as e:
         logger.error(f"SCHEDULER: Error updating stock list: {e}")
 
@@ -175,10 +145,11 @@ def start_scheduler():
     scheduler = BlockingScheduler(timezone="Asia/Shanghai")
     logger.info("调度器已成功初始化。")
 
-    # 1. 每日 08:30 更新股票列表
+    # 1. 每日 17:30 更新股票列表
+    # 在收盘后进行，以确保列表是最新的
     scheduler.add_job(
         update_stock_list_job, 
-        CronTrigger(hour=8, minute=30),
+        CronTrigger(hour=17, minute=30),
         id='update_stock_list'
     )
 
@@ -189,17 +160,14 @@ def start_scheduler():
         id='sync_watchlist'
     )
     
-    # 3. 每日 17:30 运行策略扫描
+    # 3. 每日 18:00 运行策略扫描 (推迟到列表更新后)
     scheduler.add_job(
         daily_strategy_scan_job,
-        CronTrigger(hour=17, minute=30),
+        CronTrigger(hour=18, minute=0),
         id='strategy_scan'
     )
     
-    # 3. (可选) 启动时立即运行一次列表更新，确保有数据
-    # scheduler.add_job(update_stock_list_job) 
-
-    logger.info("已添加定时任务: update_stock_list (08:30), sync_watchlist (17:00)")
+    logger.info("已添加定时任务: sync_watchlist (17:00), update_stock_list (17:30), strategy_scan (18:00)")
     logger.info("调度器正在运行... 按下 Ctrl+C 可以退出。")
 
     try:

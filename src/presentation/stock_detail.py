@@ -4,8 +4,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import redis
 import json
+import concurrent.futures
 from src.config import config
-from src.data_acquisition import data_fetcher
+from src.data_acquisition import data_fetcher, deep_analysis_fetcher
 from src.data_storage.watchlist_manager import watchlist_manager
 from src.strategy_engine.composite_strategy import CompositeStrategy
 from src.strategy_engine.backtest_engine import run_backtest
@@ -21,11 +22,26 @@ def get_redis_client():
     )
 
 def get_stock_realtime_info(stock_code):
-    """从 Redis 获取单只股票的实时详情"""
-    r = get_redis_client()
-    data_str = r.get(f"quote:{stock_code}")
-    if data_str:
-        return json.loads(data_str)
+    """
+    从 Redis 获取单只股票的实时详情。
+    如果 Redis 中没有数据 (如未开启采集器)，则尝试直接调用 API 获取。
+    """
+    # 1. 尝试从 Redis 获取
+    try:
+        r = get_redis_client()
+        data_str = r.get(f"quote:{stock_code}")
+        if data_str:
+            return json.loads(data_str)
+    except Exception as e:
+        # Redis 连接失败，不阻塞，尝试直接API
+        pass
+        
+    # 2. 如果 Redis 为空，调用实时 API
+    # 使用 data_fetcher 新增的单股查询接口
+    spot_data = data_fetcher.fetch_stock_spot_realtime(stock_code)
+    if spot_data:
+        return spot_data
+        
     return None
 
 def render_order_book(data):
@@ -331,6 +347,74 @@ def render_history_money_flow(stock_code):
     except Exception as e:
         st.error(f"历史资金趋势计算失败: {e}")
 
+def render_deep_analysis(stock_code):
+    """渲染深度多维分析面板"""
+    st.subheader("🧠 深度多维分析报告 (AI Diagnosis)")
+    st.info("点击下方按钮，AI 将全网搜集该股的行业、资金、新闻、股东等七大维度数据并进行分析。")
+    
+    if st.button("🚀 生成/刷新深度分析报告", type="primary", use_container_width=True):
+        with st.spinner("🔍 正在全网搜集数据 (行业、资金、新闻、股东、量化)..."):
+            try:
+                # 并行获取数据
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    f1 = executor.submit(deep_analysis_fetcher.fetch_individual_info, stock_code)
+                    f2 = executor.submit(deep_analysis_fetcher.fetch_stock_news, stock_code)
+                    f3 = executor.submit(deep_analysis_fetcher.fetch_top_holders, stock_code)
+                    f4 = executor.submit(deep_analysis_fetcher.fetch_capital_flow_history, stock_code)
+                    
+                    info = f1.result()
+                    news = f2.result()
+                    holders = f3.result()
+                    flow_history = f4.result()
+
+                # --- 1. 行业与基本面 ---
+                st.markdown("#### 1. 🏭 行业与基本面")
+                i1, i2, i3, i4 = st.columns(4)
+                i1.metric("所属行业", info.get("行业", "未知"))
+                i2.metric("总市值", f"{info.get('总市值', 0)/100000000:.2f}亿" if info.get('总市值') else "N/A")
+                i3.metric("流通市值", f"{info.get('流通市值', 0)/100000000:.2f}亿" if info.get('流通市值') else "N/A")
+                i4.metric("市盈率(动)", f"{info.get('市盈率(动)', 'N/A')}")
+                
+                # --- 2. 资金面深度 ---
+                st.markdown("#### 2. 💸 资金面深度 (量化/主力)")
+                if not flow_history.empty:
+                    # 简单计算近期主力净流入天数
+                    recent_days = 20
+                    recent_flow = flow_history.tail(recent_days)
+                    positive_days = len(recent_flow[recent_flow['main_net_inflow'] > 0])
+                    
+                    st.write(f"近 {recent_days} 个交易日中，主力净流入 **{positive_days}** 天。")
+                    
+                    # 画图
+                    fig = go.Figure()
+                    colors = ['red' if v > 0 else 'green' for v in flow_history['main_net_inflow']]
+                    fig.add_trace(go.Bar(x=flow_history['date'], y=flow_history['main_net_inflow'], marker_color=colors, name='主力净流入'))
+                    fig.update_layout(height=300, title="近30日主力资金净流入趋势", margin=dict(l=0,r=0,t=30,b=0))
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.warning("暂无资金流向历史数据")
+
+                # --- 3. 股东持股 ---
+                st.markdown("#### 3. 👥 股东持股情况")
+                if not holders.empty:
+                    st.dataframe(holders, use_container_width=True)
+                else:
+                    clean_code = deep_analysis_fetcher.get_clean_code(stock_code)
+                    url = f"http://data.eastmoney.com/gdfx/{clean_code}.html"
+                    st.warning(f"暂无最新股东数据 (可能受限于网络)。 [👉 点击查看东财深度数据]({url})")
+
+                # --- 4. 消息面 ---
+                st.markdown("#### 4. 📰 市场消息与热度")
+                if news:
+                    for n in news[:5]:
+                        st.markdown(f"- **[{n['time']}]** [{n['title']}]({n['url']}) _({n['source']})_")
+                else:
+                    st.warning("暂无相关新闻")
+
+            except Exception as e:
+                st.error(f"深度分析生成失败: {e}")
+                st.exception(e)
+
 def render_strategy_diagnosis(stock_code):
     """渲染策略诊断面板"""
     try:
@@ -486,38 +570,56 @@ def render_stock_detail_page():
         return
 
     # 获取实时数据
+    # 关键修复：如果Redis没数据，自动调用实时接口兜底
     realtime_data = get_stock_realtime_info(stock_code)
     
     if not realtime_data:
-        st.error(f"未找到股票 {stock_code} 的实时数据，可能未在监控列表中。")
-        return
+        # 再试一次，可能格式问题，尝试转换格式
+        # 如果传入的是 300115.SZ，尝试转为 sz300115
+        clean_code = stock_code.lower().replace('.', '').replace('sz', 'sz').replace('sh', 'sh') # 简单清理
+        # 正规化 logic same as data_fetcher
+        if not (clean_code.startswith('sh') or clean_code.startswith('sz')):
+             if stock_code.startswith('6'): clean_code = f"sh{clean_code}"
+             else: clean_code = f"sz{clean_code}"
+             
+        realtime_data = get_stock_realtime_info(clean_code)
+        
+        if not realtime_data:
+            st.error(f"未找到股票 {stock_code} 的实时数据。请检查代码格式或网络连接。")
+            return
 
     # --- 页面头部 ---
-    # 布局：标题 + 收藏按钮
-    col_title, col_fav = st.columns([0.85, 0.15])
+    # 移动端适配布局：7:3 比例，兼顾标题长度和按钮宽度
+    col_title, col_fav = st.columns([0.7, 0.3])
     
     with col_title:
-        st.title(f"{realtime_data['name']} ({stock_code})")
+        # 使用 Markdown 渲染标题，font-size 稍微调小适应移动端
+        st.markdown(f"### {realtime_data['name']} <span style='font-size:0.7em;color:gray'>({stock_code})</span>", unsafe_allow_html=True)
         
     with col_fav:
         is_watched = watchlist_manager.is_in_watchlist(stock_code)
         if is_watched:
-            if st.button("★ 已收藏", key="btn_unfav"):
+            # use_container_width=True 让按钮填满列宽，视觉更整齐
+            # type="primary" (红色)
+            if st.button("★ 已存", key="btn_unfav", type="primary", use_container_width=True):
                 watchlist_manager.remove_stock(stock_code)
                 st.rerun()
         else:
-            if st.button("☆ 加入自选", key="btn_fav"):
+            # type="secondary" (默认/灰色)
+            if st.button("☆ 加入", key="btn_fav", use_container_width=True):
                 watchlist_manager.add_stock(stock_code)
                 st.rerun()
     
-    # 核心指标栏
-    kp1, kp2, kp3, kp4 = st.columns(4)
-    kp1.metric("当前价", realtime_data['price'], 
+    # 核心指标栏 (移动端可能需要分成两行，每行2个)
+    # 检查是否为移动端（无法直接检测，但可以优化布局）
+    # 使用 st.columns 自动适配
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("当前价", realtime_data['price'], 
                f"{realtime_data['change_pct']}%", 
                delta_color="normal" if realtime_data['change_pct'] > 0 else "inverse")
-    kp2.metric("今开", realtime_data['open'])
-    kp3.metric("最高", realtime_data['high'])
-    kp4.metric("最低", realtime_data['low'])
+    m2.metric("今开", realtime_data['open'])
+    m3.metric("最高", realtime_data['high'])
+    m4.metric("最低", realtime_data['low'])
     
     st.divider()
 
@@ -527,8 +629,8 @@ def render_stock_detail_page():
     with col_chart:
         st.subheader("📊 价格走势")
         
-        # 使用 Tabs 切换分时图和日K线
-        tab1, tab2, tab3 = st.tabs(["🕒 分时图", "📅 日K线", "⌛ 历史回测"])
+        # 使用 Tabs 切换分时图和日K线和深度分析
+        tab1, tab2, tab3, tab4 = st.tabs(["🕒 分时图", "📅 日K线", "🔍 深度分析", "⌛ 历史回测"])
         
         with tab1:
             render_minute_chart(stock_code)
@@ -537,6 +639,9 @@ def render_stock_detail_page():
             render_kline_chart(stock_code)
             
         with tab3:
+            render_deep_analysis(stock_code)
+            
+        with tab4:
             render_backtest_panel(stock_code)
         
     with col_book:

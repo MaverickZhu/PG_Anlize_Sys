@@ -1,5 +1,5 @@
 from sqlalchemy import (Column, String, Date, TIMESTAMP, BIGINT,
-                          Float, PrimaryKeyConstraint, Index)
+                          Float, PrimaryKeyConstraint, Index, Text)
 from sqlalchemy.sql import func
 from .database import Base
 
@@ -63,6 +63,23 @@ class SignalRecord(Base):
     def __repr__(self):
         return f"<SignalRecord(time='{self.time}', code='{self.code}', type='{self.signal_type}')>"
 
-# 注意：将这张普通表转换为 TimescaleDB 超表的操作，通常需要在表创建后，
-# 通过执行一条特殊的SQL命令来完成。我们可以在 `init_db` 中加入这个逻辑。
-# SQL: SELECT create_hypertable('stock_daily_kline', 'time'); 
+class UserWatchlist(Base):
+    """
+    用户自选股表，对应 `user_watchlist` 表。
+    支持持久化存储和未来分析。
+    """
+    __tablename__ = 'user_watchlist'
+
+    id = Column(BIGINT, primary_key=True, autoincrement=True)
+    code = Column(String(16), nullable=False, unique=True, comment="股票代码")
+    added_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), comment="加入时间")
+    notes = Column(Text, nullable=True, comment="投资备注/标签")
+    initial_price = Column(Float, nullable=True, comment="加入时的参考价格")
+    
+    # 索引，方便查询
+    __table_args__ = (
+        Index('idx_watchlist_added_at', 'added_at'),
+    )
+
+    def __repr__(self):
+        return f"<UserWatchlist(code='{self.code}', added_at='{self.added_at}')>"
