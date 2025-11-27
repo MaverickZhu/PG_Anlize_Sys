@@ -110,9 +110,9 @@ python -m src.scheduling.scheduler
 ### 3. 启动 Web 可视化看板
 启动 Streamlit 前端界面。
 ```bash
-python -m streamlit run src/presentation/app.py
+python -m streamlit run src/presentation/app.py --server.port 9000
 ```
-访问浏览器：`http://localhost:8501`
+访问浏览器：`http://localhost:9000` (如果端口 8501 被占用，可指定其他端口)
 
 ---
 
