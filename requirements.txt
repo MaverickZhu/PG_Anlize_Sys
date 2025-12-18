@@ -21,3 +21,7 @@ APScheduler
 streamlit
 flask
 plotly
+
+# Docs (KN PDF extraction)
+pypdf
+pymupdf
