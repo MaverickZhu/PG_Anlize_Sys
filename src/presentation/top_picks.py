@@ -48,7 +48,7 @@ def render_top_picks_page():
     st.title("🏆 AI 优选前十榜 (Top 10 Picks)")
     st.markdown("""
     系统实时扫描全市场 5000+ 只股票，经过两轮筛选为您推荐：
-    1.  **初筛**: 涨幅在 0% ~ 5% 之间，且交易活跃。
+    1.  **初筛**: 涨幅 0%~5%，换手率 > 2%，量比 > 1.5 (量能显著放大)。
     2.  **精选**: 深度运行 AI 策略 (MACD + RSI + Bollinger)，按综合评分排序。
     """)
 
@@ -64,26 +64,28 @@ def render_top_picks_page():
                 return
 
             # --- 第二步: 初筛过滤 ---
-            st.write("2. 执行第一轮过滤 (0% < 涨幅 < 5%, 活跃股)...")
+            st.write("2. 执行第一轮过滤 (0% < 涨幅 < 5%, 活跃股, 量比 > 1.5)...")
             # 过滤条件:
             # 1. 涨幅 > 0 且 < 5
             # 2. 换手率 > 2% (保证活跃度)
-            # 3. 排除 ST 股 (名称带 ST)
+            # 3. 量比 > 1.5 (新增: 相比过去5天平均量能显著放大)
+            # 4. 排除 ST 股 (名称带 ST)
             
             # 转换数值列
             spot_df['pct_change'] = pd.to_numeric(spot_df['pct_change'], errors='coerce')
             spot_df['turnover_rate'] = pd.to_numeric(spot_df['turnover_rate'], errors='coerce')
+            spot_df['volume_ratio'] = pd.to_numeric(spot_df['volume_ratio'], errors='coerce')
             
             filtered_df = spot_df[
                 (spot_df['pct_change'] > 0) & 
                 (spot_df['pct_change'] < 5) & 
                 (spot_df['turnover_rate'] > 2) &
+                (spot_df['volume_ratio'] > 1.5) &
                 (~spot_df['name'].str.contains('ST'))
             ].copy()
             
-            # 按换手率排序，取前 30 只作为精选池 (换手率高说明主力动作明显)
-            # 注: 腾讯简易接口未返回量比，故使用换手率替代
-            candidates = filtered_df.sort_values('turnover_rate', ascending=False).head(30)
+            # 按量比排序，取前 30 只作为精选池 (优先关注量能爆发的个股)
+            candidates = filtered_df.sort_values('volume_ratio', ascending=False).head(30)
             
             st.write(f"初筛完成，选出 {len(candidates)} 只潜力股，准备进行 AI 评分...")
             
@@ -106,6 +108,7 @@ def render_top_picks_page():
                         # 补充实时数据中的涨幅信息 (K线里的数据可能是昨天的)
                         match_row = candidates[candidates['code'] == result['code']].iloc[0]
                         result['pct_change'] = match_row['pct_change']
+                        result['volume_ratio'] = match_row['volume_ratio']
                         scored_stocks.append(result)
                     
                     completed_count += 1
@@ -120,6 +123,8 @@ def render_top_picks_page():
 
         # 按分数倒序
         final_df = pd.DataFrame(scored_stocks)
+        # 去重，防止同一只股票出现多次
+        final_df.drop_duplicates(subset=['code'], inplace=True)
         final_df = final_df.sort_values('score', ascending=False).head(10).reset_index(drop=True)
         
         st.success(f"成功挖掘出 {len(final_df)} 只高分潜力股！")
@@ -137,14 +142,15 @@ def render_top_picks_page():
                 
                 with col2:
                     st.markdown(f"**策略分析**: {row['desc']}")
-                    st.caption("满足: 0% < 涨幅 < 5%, 换手率 > 2%, 换手率排名靠前")
+                    st.info(f"量比: {row.get('volume_ratio', 'N/A')} | 满足: 0%<涨幅<5%, 换手>2%, 量比>1.5")
                     
                 with col3:
                     st.code(row['code'])
                     # 关键修复：使用 on_click 回调来处理跳转，避免 rerun 时状态丢失
+                    # 再次修复：确保 key 唯一，防止数据源有重复时报错
                     st.button(
                         f"查看详情 {row['code']}", 
-                        key=f"btn_{row['code']}",
+                        key=f"btn_{row['code']}_{i}",
                         on_click=on_view_detail,
                         args=(row['code'], )
                     )

@@ -7,7 +7,7 @@ import numpy as np
 import os
 from datetime import datetime
 from src.config import config
-from src.presentation import stock_detail, signal_history, top_picks
+from src.presentation import stock_detail, signal_history, top_picks, multifactor_picks
 from src.data_storage.watchlist_manager import watchlist_manager
 from src.data_storage import database, crud # 新增导入
 from src.data_acquisition import data_fetcher # 新增导入
@@ -216,6 +216,11 @@ def render_dashboard():
 
             # 4. 更新表格
             show_cols = ['code', 'name', 'price', 'change_pct', 'total_score', 'score_trend', 'score_pos', 'score_active', 'time']
+
+            # 修复：Streamlit 序列化 DataFrame 到 Arrow 时，datetime64 混入 object 列可能触发 pyarrow ArrowInvalid。
+            # 这里将 time 统一转为字符串，避免 Styler + datetime 的兼容性问题。
+            if 'time' in filtered_df.columns:
+                filtered_df['time'] = filtered_df['time'].astype(str)
             
             table_placeholder.dataframe(
                 style_dataframe(filtered_df[show_cols]),
@@ -314,7 +319,7 @@ def main():
     st.sidebar.title("🧭 导航")
     
     # 页面选项
-    page_options = ["全市场监控", "AI 优选前十榜", "个股详情", "历史信号"]
+    page_options = ["全市场监控", "AI 优选前十榜", "多因子选股", "个股详情", "历史信号"]
 
     # 获取当前 URL 参数，初始化默认页面
     # 仅在 session_state 未初始化时执行一次
@@ -374,6 +379,9 @@ def main():
         
     elif page == "AI 优选前十榜":
         top_picks.render_top_picks_page()
+
+    elif page == "多因子选股":
+        multifactor_picks.render_multifactor_picks_page()
         
     elif page == "个股详情":
         # 获取代码

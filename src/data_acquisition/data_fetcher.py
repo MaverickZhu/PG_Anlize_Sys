@@ -166,6 +166,7 @@ def fetch_stock_spot_realtime(stock_code: str) -> dict:
                         'ask3': float(fields[23]), 'ask3_vol': float(fields[24])*100,
                         'ask4': float(fields[25]), 'ask4_vol': float(fields[26])*100,
                         'ask5': float(fields[27]), 'ask5_vol': float(fields[28])*100,
+                        'volume_ratio': float(fields[49]) if len(fields) > 49 and fields[49] else 0.0,
                     }
         return {}
     except Exception as e:
@@ -236,6 +237,7 @@ def fetch_all_stock_spot_realtime() -> pd.DataFrame:
                             pct = float(fields[32])
                             vol = float(fields[36]) * 100 # 手 -> 股
                             turnover_rate = float(fields[38]) if fields[38] else 0.0
+                            volume_ratio = float(fields[49]) if len(fields) > 49 and fields[49] else 0.0
                             
                             chunk_results.append({
                                 'code': full_code,
@@ -244,7 +246,7 @@ def fetch_all_stock_spot_realtime() -> pd.DataFrame:
                                 'pct_change': pct,
                                 'volume': vol,
                                 'turnover_rate': turnover_rate,
-                                'volume_ratio': 0 # 腾讯简易接口无量比
+                                'volume_ratio': volume_ratio
                             })
                         except:
                             continue
